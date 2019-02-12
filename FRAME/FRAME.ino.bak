@@ -1,0 +1,289 @@
+
+#define PULSE  100000 // em us
+#define DELAY  300000 // em us
+#define ADC_PERIOD 500			// FREQUENCIA AMOSTRAGEM = 1/ADC_PERIOD(us)
+#define OUT1 0 					// PINO OUTPUT DIGITAL	
+#define OUT2 1 					// PINO OUTPUT DIGITAL	
+//#define SENSOR_PIN  A1
+#define PWM_OUT_PIN  7
+#define SAMPLES 10				// NUMERO DE AMOSTRAS PARA MEDIA
+
+
+// INCLUDES--------------------------------------------------------------------------------------------------------
+
+#include <LiquidCrystal_I2C.h> 		//LCD	
+#include <avr/wdt.h>				//watchdog	
+// ----------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+// variaveis ------------------------------------------------------------------------------------------------------
+int setBit_startAvg = 0;
+int setBit_startAvg_OFFSET = 0;
+float averageSensor = 0;
+float averageSensor_m_OFFSET = 0;
+int sampCounter = 0;
+float average = 0.0;	
+float reading = 0.0;
+float sum_AVG = 0.0;
+float aDC_Voltage = 0.0;					// TENSÃO ADC
+float SENSOR_PIN = A6;						// PINO SENSOR
+float c_SENS_VOLT_offset = 2.50;  			// offset sensores de corrente
+// ----------------------------------------------------------------------------------------------------------------
+
+
+
+// CONSTANTES ------------------------------------------------------------------------------------------------------
+const int LCD_addr = 0x27;  // LCD i2c address
+const int LCD_chars = 16;   // number of characters
+const int LCD_lines = 2;    // number of lines
+const float VEXT_REF = 5.03;  // tensão externa medida com multimetro CALIBRAR
+
+// ----------------------------------------------------------------------------------------------------------------
+LiquidCrystal_I2C lcd(LCD_addr, LCD_chars, LCD_lines);
+// ----------------------------------------------------------------------------------------------------------------
+
+
+
+// funções --------------------------------------------------------------------------------------------------------
+void Serial_Send(void);
+void waveGen(void);
+void LCD_Update(void);			///LCD
+// ----------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+// VARIAVEL DE CONTROLE DO TEMPO -----------------------------------------------------------------------------------  														
+// OUTRA OPÇÃO É USAR A BIBLIOTECA TIMEMARK
+
+unsigned long currentMicros = 0;            											// Variável de controle do tempo
+unsigned long previousMicros_FSM = 0;            										// Variável de controle do tempo
+unsigned long previousMicros_ADC = 0;
+//-------------------------------------------------------------------------------------------------------------------
+
+
+// STATE MACHINE - MAQUINA DE ESTADOS -------------------------------------------------------------------------------
+enum {
+  OFFSET,
+  ONE,
+  TWO,
+  THREE
+};
+int state = OFFSET;
+//-------------------------------------------------------------------------------------------------------------------
+
+
+// CONFIGURAÇÃO / INICIALIZAÇÃO -------------------------------------------------------------------------------------
+void setup() {
+ 
+ analogReference(EXTERNAL); 										// 3V3 EXTERNO //// IMORTANTE - importante
+ for(int i=0; i<20;i++) analogRead(SENSOR_PIN); 					// ler o ADC na inicialização por causa dos valroes corrompidos
+ 
+ lcd.init();														// INICIA O LCD
+ lcd.clear();
+ 
+ 
+ wdt_enable(WDTO_2S);												//WATCHDOG, WDTO_8S, WDTO_4S, WDTO_1S, WDTO_500MS, WDTO_250MS,
+																	// WDTO_120MS, WDTO_60MS, WDTO_30MS e WDTO_15MS.
+		
+ setBit_startAvg = 0;												// BIT DE CONTROLE AMOSTRAGEM	
+ setBit_startAvg_OFFSET = 0;										// BIT DE CONTROLE AMOSTRAGEM	
+ 
+ pinMode(OUT1,  OUTPUT);  
+ pinMode(OUT2,  OUTPUT);  
+ 
+ state = OFFSET;														// INICIALIZA MAQUINA DE ESTADOS	
+ 
+ //Serial.begin(9600); 												// NECESSARIO DESABILITAR PARA OBTER UMA FORMA DE ONDA PRECISA
+ }
+// --------------------------------------------------------------------------------------------------------------------
+
+
+ /// ----- MAIN LOOOP ------------------------------------------------------------------------------------------------  
+ void loop()
+{
+
+
+	
+	
+	wdt_reset();												// RESET WATCHDOG	
+	
+	currentMicros = micros();   								// controle do tempo de execução      
+	
+	averageSensor = averageSens();
+	
+	waveGen();
+	
+			
+	aDC_Voltage = (averageSensor_m_OFFSET/1024.00)*VEXT_REF; 	
+	
+	LCD_Update();												// MANDA INFORMAÇÃO PRO LCD
+		
+		
+	
+}
+/// ----- END LOOOP ------------------------------------------------------------------------------------------------ 
+
+
+
+
+// calcula a media -------------------------------------------------------------------------------------------------------
+float averageSens(){	
+	digitalWrite(OUT2, LOW);	
+	if  (currentMicros - previousMicros_ADC > ADC_PERIOD-1) 
+	{
+	digitalWrite(OUT2, HIGH);								
+	previousMicros_ADC = currentMicros;	
+	reading = analogRead(SENSOR_PIN); 		
+	sum_AVG = sum_AVG + reading;	
+		if (sampCounter == SAMPLES-1)
+		{
+			sampCounter = 0;
+			average = sum_AVG/SAMPLES;			
+			sum_AVG = 0;
+		} else
+		{
+		sampCounter++;
+		}
+	
+	}
+	return average;
+}
+
+
+// envia os valores pela serial ///////////////////////////////
+// void Serial_Send(void)
+// {
+  // Serial.print("Average:   ");      Serial.print(averageSensor); Serial.println(" V");
+  // Serial.print("Samples:   ");      Serial.println(SAMPLES);   
+  // Serial.println("");
+// }
+
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// gera foram de onda
+void waveGen(void)
+{
+  
+  switch(state)
+		{
+		  case OFFSET:     ///  CALC OFFSET
+			
+			if  (currentMicros - previousMicros_FSM > PULSE-1) 
+				{
+					
+					previousMicros_FSM = currentMicros;				
+					state = ONE;
+					break;
+				} 
+			else
+				{
+					c_SENS_VOLT_offset = averageSensor	;				
+					break;
+				}				
+			break; 
+			
+		  case ONE: /// DELAY
+		 
+			if  (currentMicros - previousMicros_FSM > DELAY-1) 
+				{
+					
+					previousMicros_FSM = currentMicros;
+					state = TWO;
+					break;
+				} 
+			else
+				{					
+					break;
+				}	
+				
+			break; 
+	  
+			case TWO: ///  AVERAGE MINUS OFFSET
+		 
+			if  (currentMicros - previousMicros_FSM > PULSE-1) 
+				{
+					
+					previousMicros_FSM = currentMicros;
+					state = THREE;
+					setBit_startAvg_OFFSET = 0;
+					break;
+				} 
+			else
+				{	
+					averageSensor_m_OFFSET = averageSensor - c_SENS_VOLT_offset;					
+					break;
+					
+				}	
+				
+			break; 
+			
+			
+			
+			case THREE: ///  DELAY
+		 
+			if  (currentMicros - previousMicros_FSM > DELAY-1) 
+				{
+					
+					previousMicros_FSM = currentMicros;
+					state = OFFSET;
+					break;
+				} 
+			else
+				{					
+					break;
+					
+				}	
+				
+			break; 
+	  
+	  
+	  
+		  default:
+			state = OFFSET;
+		}	
+  
+}
+
+
+// atualiza o LCD com os valores /////////////////////////////////////
+void LCD_Update(void)
+{
+  
+    // Print a message to the LCD.
+  lcd.backlight(); 
+  // set the cursor and write some text
+  lcd.setCursor(0,0);
+  lcd.print("T(V)   C(A)    "); 
+  
+  lcd.setCursor(0,1);
+  lcd.print(aDC_Voltage);  //lcd.print("V   ");
+ 
+  lcd.setCursor(7,1);
+  lcd.print(c_SENS_VOLT_offset); //lcd.print("mA   ");
+}
+
+
+
+
+/* 
+void convert_Values(void)
+{
+  float square_ratio = reading / 1023.0;     	 	//Get percent of maximum value (1023)
+  square_ratio = pow(square_ratio, 2.0);      		//Square to make response more obvious
+}
+
+
+
+void outputPinValues(void)
+{
+  analogWrite(LED_BUILTIN, 255.0 * square_ratio);   //Adjust LED brightness relatively  
+  analogWrite(PWM_OUT_PIN, 255.0 * square_ratio);   //VISUALIZAÇÃO NO OSCILOSCOPIO 
+} */
+
